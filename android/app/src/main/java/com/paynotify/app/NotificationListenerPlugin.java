@@ -64,21 +64,52 @@ public class NotificationListenerPlugin implements FlutterPlugin, MethodCallHand
 
     @Override
     public void onNotificationReceived(String packageName, String title, String text) {
-        if (channel != null) {
+        if (channel != null && context != null) {
             try {
-                // Create a map to pass data to Flutter
-                java.util.Map<String, Object> data = new java.util.HashMap<>();
-                data.put("packageName", packageName);
-                data.put("title", title);
-                data.put("text", text);
+                // Process notification using BankNotificationProcessor
+                BankNotificationProcessor processor = new BankNotificationProcessor(context);
+                BankNotificationProcessor.ProcessedNotification result =
+                    processor.processNotification(packageName, title, text);
 
-                // Invoke Flutter method on the UI thread
-                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
-                    channel.invokeMethod("onNotificationReceived", data);
-                });
+                if (result != null) {
+                    // Create a map with the processed data
+                    java.util.Map<String, Object> data = new java.util.HashMap<>();
+                    data.put("packageName", packageName);
+                    data.put("bankName", result.bankName);
+                    data.put("amount", result.amount);
+                    data.put("accountNumber", result.accountNumber);
+                    data.put("senderInfo", result.senderInfo);
+                    data.put("rawText", result.rawText);
+                    data.put("timestamp", System.currentTimeMillis());
+
+                    // Invoke Flutter method on the UI thread with enhanced data
+                    new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> {
+                        channel.invokeMethod("onNotificationReceived", data, new MethodChannel.Result() {
+                            @Override
+                            public void success(Object result) {
+                                Log.d(TAG, "Successfully sent bank notification to Flutter");
+                            }
+
+                            @Override
+                            public void error(String errorCode, String errorMessage, Object errorDetails) {
+                                Log.e(TAG, "Error in Flutter while processing notification: " + errorMessage);
+                            }
+
+                            @Override
+                            public void notImplemented() {
+                                Log.e(TAG, "Notification handling not implemented in Flutter");
+                            }
+                        });
+                    });
+                } else {
+                    Log.d(TAG, "Notification was not a valid bank transaction");
+                }
             } catch (Exception e) {
-                Log.e(TAG, "Error sending notification to Flutter: " + e.getMessage());
+                Log.e(TAG, "Error processing bank notification: " + e.getMessage());
+                e.printStackTrace();
             }
+        } else {
+            Log.e(TAG, "Channel or context is null, cannot process notification");
         }
     }
 
@@ -110,13 +141,23 @@ public class NotificationListenerPlugin implements FlutterPlugin, MethodCallHand
         try {
             if (isNotificationListenerEnabled()) {
                 Intent intent = new Intent(context, BankNotificationListenerService.class);
+                intent.putExtra("start_reason", "manual_start");
                 context.startService(intent);
                 Log.d(TAG, "Notification listener service started");
+                
+                // Initialize BankNotificationProcessor
+                new BankNotificationProcessor(context);
+                Log.d(TAG, "Bank notification processor initialized");
             } else {
-                Log.d(TAG, "Notification listener permission not granted");
+                Log.w(TAG, "Notification listener permission not granted");
+                openNotificationListenerSettings();
             }
+        } catch (SecurityException se) {
+            Log.e(TAG, "Security exception starting service: " + se.getMessage());
+            openNotificationListenerSettings();
         } catch (Exception e) {
-            Log.e(TAG, "Error starting notification listener service: " + e.getMessage());
+            Log.e(TAG, "Error starting notification listener service", e);
+            e.printStackTrace();
         }
     }
 

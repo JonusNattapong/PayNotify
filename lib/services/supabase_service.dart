@@ -1,223 +1,250 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:pay_notify/models/transaction.dart';
+import 'package:pay_notify/services/database_service.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'dart:async';
 
 class SupabaseService extends ChangeNotifier {
   static final SupabaseService _instance = SupabaseService._internal();
   static SupabaseService get instance => _instance;
   
-  // Supabase client to access the API
-  late final SupabaseClient _client;
-  
-  // User authentication data
-  User? _currentUser;
-  User? get currentUser => _currentUser;
-  
-  // User device token for push notifications
-  String? _deviceToken;
-  String? get deviceToken => _deviceToken;
+  static const String _tableName = 'transactions';
   
   bool _isInitialized = false;
-  bool get isInitialized => _isInitialized;
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
+  bool _isSyncing = false;
+  
+  // Auto-sync settings
+  bool _autoSync = true;
+  bool _syncOnWifiOnly = true;
+  
+  SupabaseClient get _client => Supabase.instance.client;
   
   SupabaseService._internal();
   
   Future<void> initialize({
     required String supabaseUrl,
-    required String supabaseAnonKey,
+    required String supabaseKey,
   }) async {
     if (_isInitialized) return;
     
     try {
       await Supabase.initialize(
         url: supabaseUrl,
-        anonKey: supabaseAnonKey,
+        anonKey: supabaseKey,
       );
       
-      _client = Supabase.instance.client;
       _isInitialized = true;
       
-      // Set up authentication listener
-      _initializeAuthListener();
+      // Initialize sync settings
+      await _loadSyncSettings();
+      
+      // Set up connectivity listener for auto-sync
+      if (_autoSync) {
+        _setupConnectivityListener();
+      }
       
       print('Supabase initialized successfully');
     } catch (e) {
-      print('Error initializing Supabase: $e');
-      rethrow;
+      print('Failed to initialize Supabase: $e');
     }
   }
   
-  void _initializeAuthListener() {
-    _client.auth.onAuthStateChange.listen((data) {
-      final AuthChangeEvent event = data.event;
-      final Session? session = data.session;
+  Future<void> _loadSyncSettings() async {
+    _autoSync = await DatabaseService.instance.getSetting('auto_sync', true);
+    _syncOnWifiOnly = await DatabaseService.instance.getSetting('sync_on_wifi_only', true);
+  }
+  
+  Future<void> saveSyncSettings({bool? autoSync, bool? syncOnWifiOnly}) async {
+    if (autoSync != null) {
+      _autoSync = autoSync;
+      await DatabaseService.instance.saveSetting('auto_sync', autoSync);
       
-      if (event == AuthChangeEvent.signedIn || event == AuthChangeEvent.tokenRefreshed) {
-        _currentUser = session?.user;
-        notifyListeners();
-      } else if (event == AuthChangeEvent.signedOut) {
-        _currentUser = null;
-        notifyListeners();
+      if (autoSync) {
+        _setupConnectivityListener();
+      } else {
+        await _connectivitySubscription?.cancel();
+        _connectivitySubscription = null;
+      }
+    }
+    
+    if (syncOnWifiOnly != null) {
+      _syncOnWifiOnly = syncOnWifiOnly;
+      await DatabaseService.instance.saveSetting('sync_on_wifi_only', syncOnWifiOnly);
+    }
+  }
+  
+  void _setupConnectivityListener() {
+    _connectivitySubscription?.cancel();
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((result) {
+      if (!_autoSync) return;
+      
+      if (result == ConnectivityResult.wifi || 
+          (!_syncOnWifiOnly && result != ConnectivityResult.none)) {
+        // Auto-sync when connectivity is available based on settings
+        syncTransactions();
       }
     });
+  }
+  
+  Future<bool> isOnlineAndConnected() async {
+    if (!_isInitialized) return false;
     
-    // Check if user is already signed in
-    _currentUser = _client.auth.currentUser;
-    if (_currentUser != null) {
-      notifyListeners();
-    }
-  }
-  
-  Future<void> signInAnonymously() async {
     try {
-      final response = await _client.auth.signInAnonymously();
-      _currentUser = response.user;
-      notifyListeners();
-    } catch (e) {
-      print('Error signing in anonymously: $e');
-      rethrow;
-    }
-  }
-  
-  Future<void> signOut() async {
-    try {
-      await _client.auth.signOut();
-    } catch (e) {
-      print('Error signing out: $e');
-      rethrow;
-    }
-  }
-  
-  Future<void> registerDeviceToken(String token) async {
-    try {
-      if (_currentUser == null) {
-        await signInAnonymously();
+      var connectivityResult = await Connectivity().checkConnectivity();
+      if (connectivityResult == ConnectivityResult.none) {
+        return false;
       }
       
-      _deviceToken = token;
+      if (_syncOnWifiOnly && connectivityResult != ConnectivityResult.wifi) {
+        return false;
+      }
       
-      // Save the token in the database
-      await _client
-          .from('device_tokens')
-          .upsert({
-            'user_id': _currentUser!.id,
-            'device_token': token,
-            'platform': 'android',
-            'created_at': DateTime.now().toIso8601String(),
-          }, onConflict: 'user_id, device_token');
-      
-      notifyListeners();
+      // Perform a simple API call to verify connection
+      await _client.from('_dummy').select('*').limit(1).maybeSingle();
+      return true;
     } catch (e) {
-      print('Error registering device token: $e');
-      rethrow;
+      print('Connection check failed: $e');
+      return false;
     }
   }
   
   Future<void> saveTransaction(Transaction transaction) async {
+    if (!_isInitialized) {
+      throw Exception('Supabase not initialized');
+    }
+    
+    final isConnected = await isOnlineAndConnected();
+    if (!isConnected) {
+      throw Exception('No connectivity available');
+    }
+    
     try {
-      if (_currentUser == null) {
-        await signInAnonymously();
-      }
+      await _client.from(_tableName).upsert({
+        'id': transaction.id,
+        'amount': transaction.amount,
+        'bank_name': transaction.bankName,
+        'account_number': transaction.accountNumber,
+        'sender_info': transaction.senderInfo,
+        'description': transaction.description,
+        'timestamp': transaction.timestamp.millisecondsSinceEpoch,
+        'is_verified': transaction.isVerified ? 1 : 0,
+        'raw_notification_text': transaction.rawNotificationText,
+        'created_at': DateTime.now().toIso8601String(),
+      });
       
-      final transactionData = {
-        ...transaction.toMap(),
-        'user_id': _currentUser!.id,
-      };
+      // Update sync status in local database
+      await DatabaseService.instance.updateSyncStatus(transaction.id, 1);
       
-      // Insert the transaction to the database
-      await _client
-          .from('transactions')
-          .insert(transactionData);
-      
-      print('Transaction saved to Supabase');
+      print('Transaction saved to Supabase: ${transaction.id}');
     } catch (e) {
-      print('Error saving transaction: $e');
-      rethrow;
+      print('Failed to save transaction to Supabase: $e');
+      throw e;
     }
   }
   
-  Future<List<Transaction>> getTransactions() async {
-    if (_currentUser == null) {
-      return [];
+  Future<List<Transaction>> fetchTransactions({int limit = 100}) async {
+    if (!_isInitialized) {
+      throw Exception('Supabase not initialized');
     }
     
     try {
       final response = await _client
-          .from('transactions')
-          .select()
-          .eq('user_id', _currentUser!.id)
-          .order('timestamp', ascending: false);
+        .from(_tableName)
+        .select()
+        .order('timestamp', ascending: false)
+        .limit(limit);
       
-      final List<Transaction> transactions = [];
-      for (final item in response) {
-        transactions.add(_mapToTransaction(item));
+      return (response as List).map((data) {
+        return Transaction(
+          id: data['id'],
+          amount: data['amount'],
+          bankName: data['bank_name'],
+          accountNumber: data['account_number'],
+          senderInfo: data['sender_info'],
+          description: data['description'],
+          timestamp: DateTime.fromMillisecondsSinceEpoch(data['timestamp']),
+          isVerified: data['is_verified'] == 1,
+          rawNotificationText: data['raw_notification_text'],
+        );
+      }).toList();
+    } catch (e) {
+      print('Failed to fetch transactions from Supabase: $e');
+      throw e;
+    }
+  }
+  
+  // Sync local transactions with Supabase
+  Future<void> syncTransactions() async {
+    if (!_isInitialized || _isSyncing) return;
+    
+    final isConnected = await isOnlineAndConnected();
+    if (!isConnected) return;
+    
+    _isSyncing = true;
+    
+    try {
+      // Get unsynchronized transactions
+      final unsyncedTransactions = await DatabaseService.instance.getUnsyncedTransactions();
+      
+      if (unsyncedTransactions.isEmpty) {
+        _isSyncing = false;
+        return;
       }
       
-      return transactions;
+      print('Syncing ${unsyncedTransactions.length} transactions...');
+      
+      // Upload each unsynchronized transaction
+      for (final transaction in unsyncedTransactions) {
+        try {
+          await saveTransaction(transaction);
+        } catch (e) {
+          print('Failed to sync transaction ${transaction.id}: $e');
+        }
+      }
+      
+      print('Sync completed');
     } catch (e) {
-      print('Error getting transactions: $e');
-      return [];
+      print('Sync error: $e');
+    } finally {
+      _isSyncing = false;
     }
   }
   
-  Stream<List<Transaction>> getTransactionsStream() {
-    if (_currentUser == null) {
-      return Stream.value([]);
+  // Delete a transaction from cloud
+  Future<void> deleteTransaction(String id) async {
+    if (!_isInitialized) {
+      throw Exception('Supabase not initialized');
     }
-    
-    return _client
-        .from('transactions')
-        .stream(primaryKey: ['id'])
-        .eq('user_id', _currentUser!.id)
-        .order('timestamp')
-        .map((items) => items.map((item) => _mapToTransaction(item)).toList());
-  }
-  
-  Transaction _mapToTransaction(Map<String, dynamic> data) {
-    return Transaction(
-      id: data['id'],
-      amount: (data['amount'] as num).toDouble(),
-      bankName: data['bank_name'] ?? '',
-      accountNumber: data['account_number'] ?? '',
-      senderInfo: data['sender_info'] ?? '',
-      description: data['description'] ?? '',
-      timestamp: DateTime.parse(data['timestamp']),
-      isVerified: data['is_verified'] ?? false,
-      rawNotificationText: data['raw_notification_text'] ?? '',
-    );
-  }
-  
-  Future<void> deleteTransaction(String transactionId) async {
-    if (_currentUser == null) return;
     
     try {
-      await _client
-          .from('transactions')
-          .delete()
-          .eq('id', transactionId)
-          .eq('user_id', _currentUser!.id);
+      await _client.from(_tableName).delete().eq('id', id);
+      print('Transaction deleted from Supabase: $id');
     } catch (e) {
-      print('Error deleting transaction: $e');
-      rethrow;
+      print('Failed to delete transaction from Supabase: $e');
+      throw e;
     }
   }
   
-  Future<void> configureLineNotify(String lineNotifyToken) async {
-    if (_currentUser == null) return;
+  // Fetch transaction statistics from cloud
+  Future<Map<String, dynamic>> fetchTransactionStats() async {
+    if (!_isInitialized) {
+      throw Exception('Supabase not initialized');
+    }
     
     try {
-      await _client
-          .from('user_integrations')
-          .upsert({
-            'user_id': _currentUser!.id,
-            'integration_type': 'line_notify',
-            'config': { 'token': lineNotifyToken },
-            'is_enabled': true,
-            'updated_at': DateTime.now().toIso8601String(),
-          }, onConflict: 'user_id, integration_type');
+      // Using Postgres functions - this requires a SQL function to be created in Supabase
+      final response = await _client.rpc('get_transaction_stats');
+      return response as Map<String, dynamic>;
     } catch (e) {
-      print('Error configuring LINE Notify: $e');
-      rethrow;
+      print('Failed to fetch transaction stats: $e');
+      throw e;
     }
+  }
+  
+  Future<void> dispose() async {
+    await _connectivitySubscription?.cancel();
+    _connectivitySubscription = null;
   }
 }
