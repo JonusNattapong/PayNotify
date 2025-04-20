@@ -82,6 +82,26 @@ public class BankNotificationListenerService extends NotificationListenerService
         // Nothing to do here, but could be used to track dismissed notifications
     }
 
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        // Restart service if it was killed
+        startBackgroundService();
+    }
+
+    @Override
+    public void onListenerConnected() {
+        super.onListenerConnected();
+        startBackgroundService();
+    }
+
+    @Override
+    public void onListenerDisconnected() {
+        super.onListenerDisconnected();
+        // Try to reconnect
+        requestRebind(new ComponentName(this, BankNotificationListenerService.class));
+    }
+
     private BankNotificationProcessor notificationProcessor;
     private int notificationCount = 0;
     private long lastNotificationTime = 0;
@@ -155,13 +175,7 @@ public class BankNotificationListenerService extends NotificationListenerService
             }
 
         } catch (Exception e) {
-            Log.e(TAG, "Error processing notification", e);
-            // Try to recover and continue service
-            try {
-                notificationProcessor = new BankNotificationProcessor(this);
-            } catch (Exception re) {
-                Log.e(TAG, "Failed to recover notification processor", re);
-            }
+            Log.e(TAG, "Error processing notification: " + e.getMessage());
         }
     }
 
