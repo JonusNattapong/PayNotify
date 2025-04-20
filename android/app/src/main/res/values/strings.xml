@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PayNotify</string>
+    
+    <!-- Accessibility Service -->
+    <string name="accessibility_service_description">PayNotify ต้องการสิทธิ์ในการอ่านหน้าจอเพื่อตรวจจับการโอนเงินจากแอพธนาคารอัตโนมัติ ข้อมูลทั้งหมดจะถูกประมวลผลในเครื่องเท่านั้น</string>
+    <string name="accessibility_service_summary">ตรวจจับการโอนเงินอัตโนมัติ</string>
+    
+    <!-- Screen Capture -->
+    <string name="screen_capture_permission_title">อนุญาตการบันทึกหน้าจอ</string>
+    <string name="screen_capture_permission_message">PayNotify ต้องการสิทธิ์ในการบันทึกหน้าจอเพื่อตรวจจับการโอนเงินอัตโนมัติ</string>
+    <string name="screen_capture_permission_denied">ไม่สามารถทำงานได้ โปรดอนุญาตการบันทึกหน้าจอ</string>
+    
+    <!-- Notifications -->
+    <string name="notification_channel_transactions">การทำรายการ</string>
+    <string name="notification_channel_transactions_description">แจ้งเตือนเมื่อมีการโอนเงินเข้า</string>
+    
+    <!-- Errors -->
+    <string name="error_screen_capture_not_supported">อุปกรณ์ไม่รองรับการบันทึกหน้าจอ</string>
+    <string name="error_screen_capture_failed">ไม่สามารถบันทึกหน้าจอได้</string>
+    <string name="error_ocr_failed">ไม่สามารถอ่านข้อความจากภาพได้</string>
+    
+    <!-- Alerts -->
+    <string name="alert_processing">กำลังประมวลผล...</string>
+    <string name="alert_success">บันทึกข้อมูลสำเร็จ</string>
+    <string name="alert_error">เกิดข้อผิดพลาด</string>
+    
+    <!-- Settings -->
+    <string name="settings_auto_capture">เปิดใช้งานการจับภาพอัตโนมัติ</string>
+    <string name="settings_auto_capture_summary">จับภาพหน้าจอเมื่อเปิดแอพธนาคาร</string>
+    <string name="settings_notification">การแจ้งเตือน</string>
+    <string name="settings_notification_summary">ตั้งค่าการแจ้งเตือนเมื่อพบการโอนเงิน</string>
+</resources>
